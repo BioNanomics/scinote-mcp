@@ -149,6 +149,19 @@ curl -s -X POST https://scinote-mcp.os.mieweb.org/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+#### Logs
+
+One line per request on stdout — status, which kind of credential arrived
+(never its value), and the tool that was called:
+
+```
+2026-08-30T04:11:39.641Z POST /mcp 401 auth=bearer
+2026-08-30T04:11:39.829Z POST /mcp 200 auth=api-key tools/call list_teams
+```
+
+`auth=bearer` on a 401 means the client sent a token of its own rather than a
+SciNote credential.
+
 ### Useful references
 
 - Route map: `scinote-web/config/routes.rb` (search `namespace :v1`)

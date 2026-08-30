@@ -77,8 +77,22 @@ function rpcError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { jsonrpc: '2.0', error: { code: -32000, message }, id: null });
 }
 
+// Records which credential kind arrived, never its value.
+function logRequest(req: IncomingMessage, res: ServerResponse): void {
+  const auth = header(req, 'x-scinote-api-key') ? 'api-key'
+    : header(req, 'authorization') ? 'bearer'
+    : 'none';
+  res.on('finish', () => {
+    const call = res.getHeader('X-MCP-Call');
+    console.error(
+      `${new Date().toISOString()} ${req.method} ${req.url} ${res.statusCode} auth=${auth}${call ? ` ${call}` : ''}`
+    );
+  });
+}
+
 const httpServer = createHttpServer(async (req, res) => {
   applyCors(req, res);
+  logRequest(req, res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204).end();
@@ -124,6 +138,10 @@ const httpServer = createHttpServer(async (req, res) => {
 
   try {
     const body = req.method === 'POST' ? JSON.parse((await readBody(req)) || 'null') : undefined;
+    if (body && typeof body === 'object') {
+      const call = body as { method?: string; params?: { name?: string } };
+      res.setHeader('X-MCP-Call', [call.method, call.params?.name].filter(Boolean).join(' ') || 'unknown');
+    }
     await server.connect(transport);
     await withCredential(credential, () => transport.handleRequest(req, res, body));
   } catch (error) {
