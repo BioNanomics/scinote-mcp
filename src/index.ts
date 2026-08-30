@@ -10,7 +10,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { scinote, indexIncluded, relatedRefs, plainText, SciNoteError } from './scinote.js';
+import {
+  scinote,
+  indexIncluded,
+  relatedRefs,
+  plainText,
+  stockOf,
+  stockUnitNames,
+  inventoryIdOf,
+  SciNoteError,
+  type JsonApiResource
+} from './scinote.js';
 
 const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
 
@@ -32,10 +42,22 @@ async function friendly(run: () => Promise<string>) {
     const advice =
       error.status === 403 ? "You don't have permission to do that in SciNote."
       : error.status === 404 ? "SciNote couldn't find that — the id may be stale. Re-run get_task_steps and try again."
-      : error.status === 422 ? `SciNote rejected the change: ${error.body.slice(0, 200)}`
-      : `SciNote returned ${error.status}.`;
+      : `SciNote rejected the change: ${detailOf(error)}`;
     return { ...text(advice), isError: true };
   }
+}
+
+// Validation failures arrive as a JSON:API errors array; surface the detail so
+// cases like re-assigning an item read as "already taken", not "status 400".
+function detailOf(error: SciNoteError): string {
+  try {
+    const parsed = JSON.parse(error.body) as { errors?: Array<{ detail?: string }> };
+    const detail = parsed.errors?.[0]?.detail;
+    if (detail) return detail;
+  } catch {
+    // Non-JSON body (HTML error page, proxy timeout) — fall through.
+  }
+  return `SciNote returned ${error.status}.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,30 +169,69 @@ server.tool(
 // Milestone 3 — inventory assignment + stock consumption
 // ---------------------------------------------------------------------------
 
+// Renders "A1 - Aliquot 1 — 30 mL left (20 mL used on this task)" for a tech.
+async function describeItem(item: JsonApiResource, byRef: Map<string, JsonApiResource>) {
+  const stock = stockOf(item, byRef);
+  const inventoryId = inventoryIdOf(item);
+  const unit = stock && inventoryId ? (await stockUnitNames(inventoryId)).get(stock.unitId) ?? '' : '';
+  const used = item.attributes.stock_consumption;
+
+  const parts = [`${item.attributes.name}`];
+  if (stock) {
+    parts.push(`${stock.amount} ${unit} left`.trim());
+    if (stock.lowStockThreshold !== null && stock.amount <= stock.lowStockThreshold) parts.push('LOW STOCK');
+  }
+  if (used) parts.push(`${Number(used)} ${unit} used on this task`.trim());
+  return parts.join(' — ');
+}
+
 server.tool(
   'list_task_items',
   'List inventory items assigned to a task, with current stock',
   { taskId: z.string() },
-  async () => notImplemented('Milestone 3')
+  async ({ taskId }) =>
+    friendly(async () => {
+      const items = await scinote.listTaskItems(taskId);
+      const byRef = indexIncluded(items.included);
+      const lines = await Promise.all(
+        items.data.map(async (i) => `${i.id}: ${await describeItem(i, byRef)}`)
+      );
+      return lines.length ? lines.join('\n') : 'No inventory items assigned to this task yet.';
+    })
 );
 
 server.tool(
   'assign_item',
   'Assign an inventory item (e.g. an arm aliquot) to a task',
-  { taskId: z.string(), inventoryItemId: z.string() },
-  async () => notImplemented('Milestone 3')
+  { taskId: z.string(), inventoryItemId: z.string().describe('Inventory row id, from find_inventory_item') },
+  async ({ taskId, inventoryItemId }) =>
+    friendly(async () => {
+      const assigned = await scinote.assignItem(taskId, inventoryItemId);
+      return `Assigned ${await describeItem(assigned.data, indexIncluded(assigned.included))} to the task.`;
+    })
 );
 
 server.tool(
   'consume_stock',
-  'Log stock consumption (mL) for an item assigned to a task. Writes the inventory ledger. ALWAYS confirm amount and item name with the user before calling.',
+  'Log stock consumed right now for an item assigned to a task (e.g. 20 mL). Writes the inventory ledger. ALWAYS confirm the amount and item name with the user before calling.',
   {
     taskId: z.string(),
-    itemId: z.string().describe('The task item assignment id, not the inventory row id'),
-    amount: z.number().positive(),
-    comment: z.string().optional()
+    itemId: z.string().describe('Inventory row id, as shown by list_task_items'),
+    amount: z.number().positive().describe('Amount consumed in this action, not the running total'),
+    comment: z.string().optional().describe('Why it was used — shows on the ledger entry')
   },
-  async () => notImplemented('Milestone 3')
+  async ({ taskId, itemId, amount, comment }) =>
+    friendly(async () => {
+      const before = await scinote.getTaskItem(taskId, itemId);
+      const alreadyUsed = Number(before.data.attributes.stock_consumption ?? 0);
+      const after = await scinote.setStockConsumption(taskId, itemId, alreadyUsed + amount, comment);
+      const byRef = indexIncluded(after.included);
+      const unitId = stockOf(after.data, byRef)?.unitId;
+      const inventoryId = inventoryIdOf(after.data);
+      const unit = unitId && inventoryId ? (await stockUnitNames(inventoryId)).get(unitId) ?? '' : '';
+
+      return `Logged ${amount} ${unit} — ${await describeItem(after.data, byRef)}`.replace(/\s+/g, ' ');
+    })
 );
 
 // ---------------------------------------------------------------------------

@@ -99,11 +99,16 @@ Work them in order; each is demoable on its own. `src/index.ts` has the tool stu
 
 **Accept:** from MCP Inspector, tick all actions on a step and complete it; the change is visible in the SciNote web UI and in the task's Activities feed **attributed to your user**.
 
-### M3 — Inventory + stock (2 days)
+### M3 — Inventory + stock (2 days) — **done**
 
-- [ ] Implement `list_task_items`, `assign_item`, `consume_stock`
-- [ ] `consume_stock` must echo item name, amount, and resulting stock in its confirmation; the tool description already instructs the LLM to confirm with the user first — keep it that way
-- [ ] Verify in SciNote: stock decrements, ledger row appears (item card → stock export), low-stock alert fires when you cross the threshold
+- [x] Implement `list_task_items`, `assign_item`, `consume_stock`
+- [x] `consume_stock` echoes item name, amount, and resulting stock in its confirmation; the tool description instructs the LLM to confirm with the user first — keep it that way
+- [x] Verify in SciNote: stock decrements, ledger row appears (item card → stock export), low-stock warning shows when you cross the threshold
+
+> **Gotcha:** the API's `stock_consumption` is the *cumulative* total for that
+> task assignment; the ledger derives the delta. A tech saying "log another
+> 20 mL" means a delta, so `consume_stock` reads the current total and sends
+> the sum. Sending the raw amount would silently rewrite history.
 
 **Accept:** full P3.1 flow via Inspector — assign "A1 - Aliquot 2", consume 20 mL, item shows 30 mL in SciNote with a ledger entry.
 

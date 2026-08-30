@@ -38,7 +38,7 @@ export interface Collection {
 
 export interface Single {
   data: JsonApiResource;
-  included: JsonApiResource[];
+  included?: JsonApiResource[];
 }
 
 export class SciNoteError extends Error {
@@ -81,7 +81,7 @@ async function listAll(path: string): Promise<Collection> {
 }
 
 // Indexes `included` resources for relationship lookup, keyed "type:id".
-export function indexIncluded(included: JsonApiResource[]): Map<string, JsonApiResource> {
+export function indexIncluded(included: JsonApiResource[] = []): Map<string, JsonApiResource> {
   return new Map(included.map((r) => [`${r.type}:${r.id}`, r]));
 }
 
@@ -145,22 +145,78 @@ export const scinote = {
 
   // --- Milestone 3 (see app/controllers/api/v1/task_inventory_items_controller.rb) ---
 
-  listTaskItems: (taskId: string) => listAll(`${scope()}/tasks/${taskId}/items`),
+  listTaskItems: (taskId: string) => listAll(`${scope()}/tasks/${taskId}/items?include=inventory_cells`),
+
+  getTaskItem: (taskId: string, itemId: string) =>
+    request<Single>('GET', `${scope()}/tasks/${taskId}/items/${itemId}?include=inventory_cells`),
 
   assignItem: (taskId: string, inventoryItemId: string) =>
-    request('POST', `${scope()}/tasks/${taskId}/items`, {
+    request<Single>('POST', `${scope()}/tasks/${taskId}/items?include=inventory_cells`, {
       data: { type: 'inventory_items', attributes: { item_id: Number(inventoryItemId) } }
     }),
 
-  consumeStock: (taskId: string, itemId: string, amount: number, comment?: string) =>
-    request('PATCH', `${scope()}/tasks/${taskId}/items/${itemId}`, {
+  // `stock_consumption` is the running total for this task, not a delta; the
+  // ledger derives the delta itself. Callers must send the new cumulative total.
+  setStockConsumption: (taskId: string, itemId: string, total: number, comment?: string) =>
+    request<Single>('PATCH', `${scope()}/tasks/${taskId}/items/${itemId}`, {
       data: {
         id: itemId,
         type: 'inventory_items',
-        attributes: { stock_consumption: amount, stock_consumption_comment: comment ?? '' }
+        attributes: { stock_consumption: total, stock_consumption_comment: comment ?? '' }
       }
     }),
 
   listInventoryItems: (inventoryId: string) =>
-    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/items?include=inventory_cells`)
+    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/items?include=inventory_cells`),
+
+  listInventoryColumns: (inventoryId: string) =>
+    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns`)
 };
+
+// Stock cells reference their unit by id, so resolve the inventory's unit list once.
+const unitCache = new Map<string, Promise<Map<string, string>>>();
+
+export function stockUnitNames(inventoryId: string): Promise<Map<string, string>> {
+  let cached = unitCache.get(inventoryId);
+  if (!cached) {
+    cached = (async () => {
+      const columns = await scinote.listInventoryColumns(inventoryId);
+      const stockColumn = columns.data.find((c) => c.attributes.data_type === 'stock');
+      if (!stockColumn) return new Map<string, string>();
+      const units = await listAll(
+        `/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns/${stockColumn.id}/stock_unit_items`
+      );
+      return new Map(units.data.map((u) => [u.id, String(u.attributes.data)]));
+    })();
+    unitCache.set(inventoryId, cached);
+  }
+  return cached;
+}
+
+export interface Stock {
+  amount: number;
+  unitId: string;
+  lowStockThreshold: number | null;
+}
+
+export function stockOf(item: JsonApiResource, byRef: Map<string, JsonApiResource>): Stock | null {
+  for (const ref of relatedRefs(item, 'inventory_cells')) {
+    const cell = byRef.get(`${ref.type}:${ref.id}`);
+    if (cell?.attributes.value_type !== 'stock') continue;
+    const value = cell.attributes.value as {
+      amount: string;
+      low_stock_threshold: string | null;
+      inventory_stock_unit_item_id: number;
+    };
+    return {
+      amount: Number(value.amount),
+      unitId: String(value.inventory_stock_unit_item_id),
+      lowStockThreshold: value.low_stock_threshold === null ? null : Number(value.low_stock_threshold)
+    };
+  }
+  return null;
+}
+
+export function inventoryIdOf(item: JsonApiResource): string | null {
+  return relatedRefs(item, 'inventory')[0]?.id ?? null;
+}
