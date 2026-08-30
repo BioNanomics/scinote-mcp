@@ -1,0 +1,112 @@
+# scinote-mcp
+
+MCP (Model Context Protocol) server that exposes SciNote ELN bench workflows as tools, so an AI assistant (e.g. Ozwell hands-free chat) can drive them by voice: *"tick 'stain mixture combined'"*, *"consume 20 mils from A1 aliquot 2"*, *"what's my next step?"*.
+
+**Architecture** (see also `docs/setup-gingaguard.md` in scinote-web):
+
+```
+Ozwell HandsFreeChat (tablet) → chat backend (LLM) → scinote-mcp (this) → SciNote REST API
+```
+
+**Hard rule:** every write goes through the SciNote REST API with the *tech's own* credentials. Never write to the SciNote database directly — API writes are what produce the audit trail, stock ledger, and permission checks. That property is the whole point of this server.
+
+## Setup
+
+```bash
+cd sidecar/scinote-mcp
+npm install
+cp .env.example .env    # then fill in values
+npm run dev             # starts on stdio
+npm run inspect         # opens MCP Inspector UI to poke at tools
+```
+
+### Authentication
+
+Two options (see `TokenAuthentication` concern in scinote-web):
+
+- **Api-Key header** (recommended to start): requires `CORE_API_KEY_ENABLED=true` on the SciNote server; each user has an API key (`users.api_key`). Set `SCINOTE_API_KEY`.
+- **JWT Bearer**: a token whose `iss` matches the server's `core_api_token_iss`. Set `SCINOTE_JWT`.
+
+Sanity check your credentials:
+
+```bash
+curl -s -H "Api-Key: $SCINOTE_API_KEY" $SCINOTE_BASE_URL/api/v1/teams | head -c 400
+```
+
+### Useful references
+
+- Route map: `scinote-web/config/routes.rb` (search `namespace :v1`)
+- Controllers (payload shapes + permitted params): `scinote-web/app/controllers/api/v1/*.rb`
+- Serializers (response shapes): `scinote-web/app/serializers/api/v1/*.rb`
+- Test data on the dev instance: team 14 / project 16 / experiment 166, task "Arm A1 - Run 1 (TEST)", inventory "GingiGuard Assay Reagents" (repository 2)
+
+The API speaks [JSON:API](https://jsonapi.org): collections are `{ data: [{ id, type, attributes, relationships }] }`; writes send the same envelope.
+
+---
+
+## Milestones
+
+Work them in order; each is demoable on its own. `src/index.ts` has the tool stubs marked per milestone — replace the `notImplemented(...)` bodies.
+
+### M0 — Environment (half a day)
+
+- [ ] `npm install && npm run typecheck` pass
+- [ ] `.env` filled in; `curl` auth sanity check returns JSON, not 401
+- [ ] `npm run inspect` opens and `scinote_status` returns versions
+
+**Accept:** screenshot of MCP Inspector showing a successful `scinote_status` call.
+
+### M1 — Read the world (1 day) — *already implemented, verify it*
+
+- [ ] `list_tasks` returns the test task(s) of experiment 166
+- [ ] `get_task_steps` returns the 21 checkpoints with `completed` flags
+- [ ] Extend `get_task_steps` to also surface checklists and their items (ids + `checked`) — the `include=checklists,checklists.checklist_items` data arrives in the JSON:API `included` array, which the current code ignores. You need those ids for M2.
+
+**Accept:** `get_task_steps` output shows step P3.1 with its Actions checklist items and ids.
+
+### M2 — Execute a protocol (2 days)
+
+- [ ] Implement `tick_checklist_item` and `complete_step` (client methods exist in `src/scinote.ts`; verify payloads against `steps_controller.rb` / `checklist_items_controller.rb` — fix the client if the guessed payloads are off)
+- [ ] Return human confirmations ("Ticked 'Blower on, 5 min' — 2 of 3 actions done on P1.1"), not raw JSON
+- [ ] Error mapping: 403 → "you don't have permission", 404 → "that step doesn't exist", stale id → suggest re-running `get_task_steps`
+
+**Accept:** from MCP Inspector, tick all actions on a step and complete it; the change is visible in the SciNote web UI and in the task's Activities feed **attributed to your user**.
+
+### M3 — Inventory + stock (2 days)
+
+- [ ] Implement `list_task_items`, `assign_item`, `consume_stock`
+- [ ] `consume_stock` must echo item name, amount, and resulting stock in its confirmation; the tool description already instructs the LLM to confirm with the user first — keep it that way
+- [ ] Verify in SciNote: stock decrements, ledger row appears (item card → stock export), low-stock alert fires when you cross the threshold
+
+**Accept:** full P3.1 flow via Inspector — assign "A1 - Aliquot 2", consume 20 mL, item shows 30 mL in SciNote with a ledger entry.
+
+### M4 — Search + results (1–2 days)
+
+- [ ] `find_inventory_item`: fuzzy name match over inventory items ("a1 aliquot 2" → row id), report stock. Voice input will be sloppy — normalize case/whitespace, tolerate "aliquot two"
+- [ ] `add_result_note`: create a text result on the task (results controller, v1; v2 has richer result elements if needed)
+
+**Accept:** "find A1 aliquot 2" round-trips to the right row id; a result note appears on the task.
+
+### M5 — Ozwell wiring (separate app, 3–5 days)
+
+Not in this repo. Stand up a small chat backend that:
+
+- [ ] Mounts `HeyOzwell/HandsFreeChat` from [@mieweb/ui](https://ui.mieweb.org/?path=/docs/product-feature-modules-ai-hey-ozwell-hands-free-chat--docs) (start with `reviewBeforeSend: true`, `transcription: "browser"`)
+- [ ] Connects an LLM to this MCP server (any MCP-capable client/orchestrator)
+- [ ] Carries the logged-in tech's SciNote credential per session (swap the static `.env` credential for a per-request header — small refactor of `src/config.ts`/`src/scinote.ts`)
+- [ ] System prompt: confirm before any `consume_stock` or `complete_step`; always answer with the checkpoint name, not ids
+
+**Accept:** on a tablet, say "hey ozwell — disk stained and rinsed, done" and watch the step complete in SciNote.
+
+### Later / hardening
+
+- Per-user credential passthrough end-to-end (no shared service account)
+- Task-scoped sessions ("I'm working Arm A1 Run 2" pins taskId so the tech never says ids)
+- Idempotency: repeating "consume 20 mL" must not double-log — read `stock_consumption` first and set, don't add
+- Rate limiting, retries with backoff, structured logging
+
+## Testing tips
+
+- MCP Inspector (`npm run inspect`) is your main harness — no LLM needed
+- Watch the Rails log on the dev box (`tail -f ~/scinote-web/log/development.log`) to see your requests hit controllers
+- Every write should be visible in three places: the SciNote UI, the task Activities feed, and (for stock) the item ledger. If any of the three is missing, something is wrong.
