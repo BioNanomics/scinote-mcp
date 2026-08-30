@@ -6,8 +6,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
+    "serve": "tsx src/http.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/http.js",
     "inspect": "npx @modelcontextprotocol/inspector tsx src/index.ts",
     "smoke": "tsx scripts/smoke.ts",
     "typecheck": "tsc --noEmit"

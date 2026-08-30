@@ -60,6 +60,72 @@ Sanity check your credentials:
 curl -s -H "Api-Key: $SCINOTE_API_KEY" $SCINOTE_BASE_URL/api/v1/teams | head -c 400
 ```
 
+### Running it
+
+Two transports share one set of tool definitions (`src/server.ts`):
+
+| Command | Transport | Credential |
+| --- | --- | --- |
+| `npm run dev` (`src/index.ts`) | stdio, for MCP Inspector and editor clients that spawn a child process | the one in `.env` |
+| `npm run serve` (`src/http.ts`) | Streamable HTTP on port 3001, for remote clients like Ozwell on a phone | **per request**, from the caller's headers |
+
+An MCP server binds to exactly one transport, so the HTTP listener builds a
+fresh server per request via `createServer()`. That also keeps concurrent techs
+from ever sharing a session.
+
+#### The HTTP endpoint carries no ambient authority
+
+A publicly reachable endpoint holding a shared admin key would hand anyone on
+the internet full write access to the ELN. So every HTTP request must present
+its own SciNote credential:
+
+```
+X-SciNote-Api-Key: <the tech's own key>
+   or
+Authorization: Bearer <JWT>
+```
+
+Requests without one get a 401. The credential travels to `src/scinote.ts` via
+an `AsyncLocalStorage` context, never a module global, so requests can't leak
+credentials into each other. SciNote stays the authorization boundary — the
+sidecar can't do anything the signed-in tech couldn't do in the browser, and
+the audit trail names a real person.
+
+`SCINOTE_MCP_ALLOW_SHARED_CREDENTIAL=true` falls back to the `.env` credential
+for local testing. Never set it on a reachable deployment.
+
+#### Behind nginx
+
+The dev deployment is proxied at `https://scinote-mcp.os.mieweb.org/` → port
+3001. List every hostname the proxy forwards in `SCINOTE_MCP_ALLOWED_HOSTS`;
+anything else is rejected as a DNS rebinding attempt. Set
+`SCINOTE_MCP_BIND=0.0.0.0` if nginx runs on a different host than this one
+(otherwise leave it on loopback).
+
+```nginx
+location / {
+    proxy_pass http://10.17.74.237:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "";
+    proxy_buffering off;          # required — MCP can stream responses
+    proxy_cache off;
+    proxy_read_timeout 3600s;
+}
+```
+
+Smoke test the deployed endpoint:
+
+```bash
+curl -s https://scinote-mcp.os.mieweb.org/healthz
+curl -s -X POST https://scinote-mcp.os.mieweb.org/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "X-SciNote-Api-Key: $SCINOTE_API_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
 ### Useful references
 
 - Route map: `scinote-web/config/routes.rb` (search `namespace :v1`)
@@ -127,14 +193,13 @@ Not in this repo. Stand up a small chat backend that:
 
 - [ ] Mounts `HeyOzwell/HandsFreeChat` from [@mieweb/ui](https://ui.mieweb.org/?path=/docs/product-feature-modules-ai-hey-ozwell-hands-free-chat--docs) (start with `reviewBeforeSend: true`, `transcription: "browser"`)
 - [ ] Connects an LLM to this MCP server (any MCP-capable client/orchestrator)
-- [ ] Carries the logged-in tech's SciNote credential per session (swap the static `.env` credential for a per-request header — small refactor of `src/config.ts`/`src/scinote.ts`)
+- [x] Carries the logged-in tech's SciNote credential per session — the HTTP transport reads it from `X-SciNote-Api-Key` / `Authorization: Bearer` on every request, so the client just has to forward it (see "The HTTP endpoint carries no ambient authority")
 - [ ] System prompt: confirm before any `consume_stock` or `complete_step`; always answer with the checkpoint name, not ids
 
 **Accept:** on a tablet, say "hey ozwell — disk stained and rinsed, done" and watch the step complete in SciNote.
 
 ### Later / hardening
 
-- Per-user credential passthrough end-to-end (no shared service account)
 - Task-scoped sessions ("I'm working Arm A1 Run 2" pins taskId so the tech never says ids)
 - Idempotency: repeating "consume 20 mL" must not double-log — read `stock_consumption` first and set, don't add
 - Rate limiting, retries with backoff, structured logging

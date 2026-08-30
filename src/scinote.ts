@@ -13,7 +13,25 @@
 // Controller sources to consult when a payload is rejected:
 //   scinote-web/app/controllers/api/v1/*.rb
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from './config.js';
+
+export interface Credential {
+  apiKey?: string;
+  jwt?: string;
+}
+
+// Over HTTP the caller supplies its own SciNote credential, so the server holds
+// no ambient authority of its own; stdio falls back to the .env credential.
+const credentials = new AsyncLocalStorage<Credential>();
+
+export function withCredential<T>(credential: Credential, run: () => Promise<T>): Promise<T> {
+  return credentials.run(credential, run);
+}
+
+function currentCredential(): Credential {
+  return credentials.getStore() ?? { apiKey: config.apiKey, jwt: config.jwt };
+}
 
 export interface JsonApiResource {
   id: string;
@@ -53,9 +71,14 @@ async function request<T = unknown>(
   body?: unknown
 ): Promise<T> {
   const url = `${config.baseUrl}${path}`;
+  const credential = currentCredential();
+  if (!credential.apiKey && !credential.jwt) {
+    throw new SciNoteError(401, 'No SciNote credential for this request', url);
+  }
+
   const headers: Record<string, string> = { 'Content-Type': 'application/vnd.api+json' };
-  if (config.apiKey) headers['Api-Key'] = config.apiKey;
-  else headers['Authorization'] = `Bearer ${config.jwt}`;
+  if (credential.apiKey) headers['Api-Key'] = credential.apiKey;
+  else headers['Authorization'] = `Bearer ${credential.jwt}`;
 
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
