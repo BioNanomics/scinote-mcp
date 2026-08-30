@@ -36,6 +36,11 @@ export interface Collection {
   included: JsonApiResource[];
 }
 
+export interface Single {
+  data: JsonApiResource;
+  included: JsonApiResource[];
+}
+
 export class SciNoteError extends Error {
   constructor(public status: number, public body: string, url: string) {
     super(`SciNote API ${status} for ${url}: ${body.slice(0, 300)}`);
@@ -115,11 +120,16 @@ export const scinote = {
   listSteps: (taskId: string, protocolId: string) =>
     listAll(`${scope()}/tasks/${taskId}/protocols/${protocolId}/steps?include=checklists,checklists.checklist_items`),
 
-  // --- Milestone 2 (verify payloads against app/controllers/api/v1/steps_controller.rb
-  //     and checklist_items_controller.rb, then wire up in index.ts) ---
+  getStep: (taskId: string, protocolId: string, stepId: string) =>
+    request<Single>(
+      'GET',
+      `${scope()}/tasks/${taskId}/protocols/${protocolId}/steps/${stepId}?include=checklists,checklists.checklist_items`
+    ),
+
+  // --- Milestone 2 ---
 
   updateStep: (taskId: string, protocolId: string, stepId: string, completed: boolean) =>
-    request('PATCH', `${scope()}/tasks/${taskId}/protocols/${protocolId}/steps/${stepId}`, {
+    request<Single>('PATCH', `${scope()}/tasks/${taskId}/protocols/${protocolId}/steps/${stepId}`, {
       data: { id: stepId, type: 'steps', attributes: { completed } }
     }),
 
@@ -127,7 +137,7 @@ export const scinote = {
     taskId: string, protocolId: string, stepId: string,
     checklistId: string, itemId: string, checked: boolean
   ) =>
-    request(
+    request<Single>(
       'PATCH',
       `${scope()}/tasks/${taskId}/protocols/${protocolId}/steps/${stepId}/checklists/${checklistId}/items/${itemId}`,
       { data: { id: itemId, type: 'checklist_items', attributes: { checked } } }

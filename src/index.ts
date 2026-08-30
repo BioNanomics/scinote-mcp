@@ -10,7 +10,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { scinote, indexIncluded, relatedRefs, plainText } from './scinote.js';
+import { scinote, indexIncluded, relatedRefs, plainText, SciNoteError } from './scinote.js';
 
 const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
 
@@ -20,6 +20,22 @@ const text = (value: unknown) => ({
 
 function notImplemented(milestone: string): never {
   throw new Error(`Not implemented yet — this is your ${milestone} task. See README.md.`);
+}
+
+// Turns API failures into something a tech can act on rather than a stack trace.
+// Ids go stale whenever a protocol is re-loaded, which is the common case here.
+async function friendly(run: () => Promise<string>) {
+  try {
+    return text(await run());
+  } catch (error) {
+    if (!(error instanceof SciNoteError)) throw error;
+    const advice =
+      error.status === 403 ? "You don't have permission to do that in SciNote."
+      : error.status === 404 ? "SciNote couldn't find that — the id may be stale. Re-run get_task_steps and try again."
+      : error.status === 422 ? `SciNote rejected the change: ${error.body.slice(0, 200)}`
+      : `SciNote returned ${error.status}.`;
+    return { ...text(advice), isError: true };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +99,6 @@ server.tool(
 
 // ---------------------------------------------------------------------------
 // Milestone 2 — protocol execution writes
-// The scinote.ts client methods exist; your job is to verify payloads against
-// the Rails controllers, handle errors, and return tech-friendly confirmations.
 // ---------------------------------------------------------------------------
 
 server.tool(
@@ -98,14 +112,35 @@ server.tool(
     itemId: z.string(),
     checked: z.boolean().default(true)
   },
-  async () => notImplemented('Milestone 2')
+  async ({ taskId, protocolId, stepId, checklistId, itemId, checked }) =>
+    friendly(async () => {
+      const updated = await scinote.updateChecklistItem(
+        taskId, protocolId, stepId, checklistId, itemId, checked
+      );
+      const label = plainText(updated.data.attributes.text);
+      const step = await scinote.getStep(taskId, protocolId, stepId);
+      const byRef = indexIncluded(step.included);
+      const items = relatedRefs(byRef.get(`checklists:${checklistId}`)!, 'checklist_items')
+        .map((ref) => byRef.get(`${ref.type}:${ref.id}`));
+      const done = items.filter((i) => i?.attributes.checked).length;
+
+      return `${checked ? 'Ticked' : 'Unticked'} "${label}" — ${done} of ${items.length} done on ${plainText(step.data.attributes.name)}`;
+    })
 );
 
 server.tool(
   'complete_step',
   'Mark a protocol step (bench checkpoint) as completed — timestamps the checkpoint',
   { taskId: z.string(), protocolId: z.string(), stepId: z.string(), completed: z.boolean().default(true) },
-  async () => notImplemented('Milestone 2')
+  async ({ taskId, protocolId, stepId, completed }) =>
+    friendly(async () => {
+      const updated = await scinote.updateStep(taskId, protocolId, stepId, completed);
+      const name = plainText(updated.data.attributes.name);
+      const steps = await scinote.listSteps(taskId, protocolId);
+      const done = steps.data.filter((s) => s.attributes.completed).length;
+
+      return `${completed ? 'Completed' : 'Reopened'} ${name} — ${done} of ${steps.data.length} checkpoints done`;
+    })
 );
 
 // ---------------------------------------------------------------------------

@@ -91,11 +91,11 @@ Work them in order; each is demoable on its own. `src/index.ts` has the tool stu
 
 **Accept:** `get_task_steps` output shows step P3.1 with its Actions checklist items and ids.
 
-### M2 — Execute a protocol (2 days)
+### M2 — Execute a protocol (2 days) — **done**
 
-- [ ] Implement `tick_checklist_item` and `complete_step` (client methods exist in `src/scinote.ts`; verify payloads against `steps_controller.rb` / `checklist_items_controller.rb` — fix the client if the guessed payloads are off)
-- [ ] Return human confirmations ("Ticked 'Blower on, 5 min' — 2 of 3 actions done on P1.1"), not raw JSON
-- [ ] Error mapping: 403 → "you don't have permission", 404 → "that step doesn't exist", stale id → suggest re-running `get_task_steps`
+- [x] Implement `tick_checklist_item` and `complete_step`
+- [x] Return human confirmations ("Ticked 'Blower on, 5 min' — 2 of 3 actions done on P1.1"), not raw JSON
+- [x] Error mapping: 403 → "you don't have permission", 404 → "that step doesn't exist", stale id → suggest re-running `get_task_steps`
 
 **Accept:** from MCP Inspector, tick all actions on a step and complete it; the change is visible in the SciNote web UI and in the task's Activities feed **attributed to your user**.
 
