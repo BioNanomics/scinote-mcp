@@ -15,12 +15,16 @@ import { withCredential, type Credential } from './session.js';
 
 const MAX_BODY_BYTES = 1_000_000;
 
+// SciNote decodes any bearer token as a JWT and fails with "Not enough or too
+// many segments" on anything else, and MCP clients attach bearers of their own.
+const JWT_SHAPE = /^[\w-]+\.[\w-]+\.[\w-]+$/;
+
 function credentialFrom(req: IncomingMessage): Credential | null {
   const apiKey = header(req, 'x-scinote-api-key');
   if (apiKey) return { apiKey };
 
-  const bearer = header(req, 'authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (bearer) return { jwt: bearer };
+  const bearer = header(req, 'authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer && JWT_SHAPE.test(bearer)) return { jwt: bearer };
 
   if (config.http.allowSharedCredential && (config.apiKey || config.jwt)) {
     return { apiKey: config.apiKey, jwt: config.jwt };
@@ -95,8 +99,9 @@ const httpServer = createHttpServer(async (req, res) => {
 
   const credential = credentialFrom(req);
   if (!credential) {
-    res.setHeader('WWW-Authenticate', 'Bearer realm="scinote"');
-    rpcError(res, 401, 'Send your SciNote credential as "X-SciNote-Api-Key" or "Authorization: Bearer <jwt>".');
+    // No WWW-Authenticate header: advertising one makes MCP clients treat this
+    // as an OAuth resource server and attach a token SciNote can't read.
+    rpcError(res, 401, 'Send your SciNote credential as "X-SciNote-Api-Key: <key>", or a SciNote JWT as "Authorization: Bearer".');
     return;
   }
 
