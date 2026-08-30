@@ -27,6 +27,33 @@ Two options (see `TokenAuthentication` concern in scinote-web):
 - **Api-Key header** (recommended to start): requires `CORE_API_KEY_ENABLED=true` on the SciNote server; each user has an API key (`users.api_key`). Set `SCINOTE_API_KEY`.
 - **JWT Bearer**: a token whose `iss` matches the server's `core_api_token_iss`. Set `SCINOTE_JWT`.
 
+Both are gated by server-side flags. On the dev instance these are set on the
+`scinote-web` systemd user unit:
+
+```
+Environment=CORE_API_V1_ENABLED=true
+Environment=CORE_API_KEY_ENABLED=true
+```
+
+Without `CORE_API_V1_ENABLED`, `/api/v1/*` returns 404 while `/api/status`
+still answers 200 — that combination means the routes were never mounted.
+
+Mint a key for a user with:
+
+```bash
+bundle exec rails runner "puts User.find_by(email: 'admin@scinote.net').regenerate_api_key!"
+```
+
+### Trying it out
+
+`npm run smoke` drives the server the same way an MCP client does:
+
+```bash
+npm run smoke                                        # list registered tools
+npm run smoke -- list_tasks
+npm run smoke -- get_task_steps '{"taskId":"970"}'
+```
+
 Sanity check your credentials:
 
 ```bash
@@ -48,19 +75,19 @@ The API speaks [JSON:API](https://jsonapi.org): collections are `{ data: [{ id, 
 
 Work them in order; each is demoable on its own. `src/index.ts` has the tool stubs marked per milestone — replace the `notImplemented(...)` bodies.
 
-### M0 — Environment (half a day)
+### M0 — Environment (half a day) — **done**
 
-- [ ] `npm install && npm run typecheck` pass
-- [ ] `.env` filled in; `curl` auth sanity check returns JSON, not 401
-- [ ] `npm run inspect` opens and `scinote_status` returns versions
+- [x] `npm install && npm run typecheck` pass
+- [x] `.env` filled in; `curl` auth sanity check returns JSON, not 401
+- [x] `npm run inspect` opens and `scinote_status` returns versions
 
 **Accept:** screenshot of MCP Inspector showing a successful `scinote_status` call.
 
-### M1 — Read the world (1 day) — *already implemented, verify it*
+### M1 — Read the world (1 day) — **done**
 
-- [ ] `list_tasks` returns the test task(s) of experiment 166
-- [ ] `get_task_steps` returns the 21 checkpoints with `completed` flags
-- [ ] Extend `get_task_steps` to also surface checklists and their items (ids + `checked`) — the `include=checklists,checklists.checklist_items` data arrives in the JSON:API `included` array, which the current code ignores. You need those ids for M2.
+- [x] `list_tasks` returns the test task(s) of experiment 166
+- [x] `get_task_steps` returns the 21 checkpoints with `completed` flags
+- [x] Extend `get_task_steps` to also surface checklists and their items (ids + `checked`) — the `include=checklists,checklists.checklist_items` data arrives in the JSON:API `included` array
 
 **Accept:** `get_task_steps` output shows step P3.1 with its Actions checklist items and ids.
 

@@ -19,7 +19,21 @@ export interface JsonApiResource {
   id: string;
   type: string;
   attributes: Record<string, unknown>;
-  relationships?: Record<string, unknown>;
+  relationships?: Record<string, Relationship>;
+}
+
+export interface Relationship {
+  data: ResourceRef | ResourceRef[] | null;
+}
+
+export interface ResourceRef {
+  id: string;
+  type: string;
+}
+
+export interface Collection {
+  data: JsonApiResource[];
+  included: JsonApiResource[];
 }
 
 export class SciNoteError extends Error {
@@ -44,17 +58,48 @@ async function request<T = unknown>(
   return (text ? JSON.parse(text) : {}) as T;
 }
 
-// Fetches every page of a JSON:API collection.
-async function listAll(path: string): Promise<JsonApiResource[]> {
-  const out: JsonApiResource[] = [];
+// Fetches every page of a JSON:API collection, accumulating `included` sideloads.
+async function listAll(path: string): Promise<Collection> {
+  const out: Collection = { data: [], included: [] };
   let next: string | null = `${path}${path.includes('?') ? '&' : '?'}page%5Bsize%5D=100`;
   while (next) {
-    const page: { data: JsonApiResource[]; links?: { next?: string | null } } =
-      await request('GET', next);
-    out.push(...page.data);
+    const page: {
+      data: JsonApiResource[];
+      included?: JsonApiResource[];
+      links?: { next?: string | null };
+    } = await request('GET', next);
+    out.data.push(...page.data);
+    if (page.included) out.included.push(...page.included);
     next = page.links?.next ? page.links.next.replace(config.baseUrl, '') : null;
   }
   return out;
+}
+
+// Indexes `included` resources for relationship lookup, keyed "type:id".
+export function indexIncluded(included: JsonApiResource[]): Map<string, JsonApiResource> {
+  return new Map(included.map((r) => [`${r.type}:${r.id}`, r]));
+}
+
+export function relatedRefs(resource: JsonApiResource, name: string): ResourceRef[] {
+  const data = resource.relationships?.[name]?.data;
+  if (!data) return [];
+  return Array.isArray(data) ? data : [data];
+}
+
+// SciNote embeds smart annotations like "[#Reagent name~rep_item~C4]" in free text.
+// Techs hear this read aloud, so drop the markup and keep the label only when the
+// surrounding prose doesn't already name it.
+const ANNOTATION = /\[#([^~\]]+)~\w+~\w+\]/g;
+
+export function plainText(value: unknown): string {
+  const raw = String(value ?? '');
+  const bare = raw.replace(ANNOTATION, ' ');
+  return raw
+    .replace(ANNOTATION, (_match, label: string) =>
+      bare.toLowerCase().includes(label.toLowerCase()) ? ' ' : ` ${label}`
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 const scope = () =>

@@ -10,7 +10,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { scinote } from './scinote.js';
+import { scinote, indexIncluded, relatedRefs, plainText } from './scinote.js';
 
 const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
 
@@ -37,7 +37,7 @@ server.tool(
   async () => {
     const tasks = await scinote.listTasks();
     return text(
-      tasks.map((t) => ({ id: t.id, name: t.attributes.name, state: t.attributes.state }))
+      tasks.data.map((t) => ({ id: t.id, name: t.attributes.name, state: t.attributes.state }))
     );
   }
 );
@@ -48,16 +48,34 @@ server.tool(
   { taskId: z.string().describe('Task id from list_tasks') },
   async ({ taskId }) => {
     const protocols = await scinote.listProtocols(taskId);
-    if (protocols.length === 0) return text('Task has no protocol');
-    const protocolId = protocols[0].id;
+    if (protocols.data.length === 0) return text('Task has no protocol');
+    const protocolId = protocols.data[0].id;
     const steps = await scinote.listSteps(taskId, protocolId);
+    const byRef = indexIncluded(steps.included);
+
     return text({
       protocolId,
-      steps: steps.map((s) => ({
+      steps: steps.data.map((s) => ({
         id: s.id,
-        name: s.attributes.name,
+        name: plainText(s.attributes.name),
         position: s.attributes.position,
-        completed: s.attributes.completed
+        completed: s.attributes.completed,
+        checklists: relatedRefs(s, 'checklists').map((ref) => {
+          const checklist = byRef.get(`${ref.type}:${ref.id}`);
+          if (!checklist) return { id: ref.id, name: null, items: [] };
+          return {
+            id: checklist.id,
+            name: plainText(checklist.attributes.name),
+            items: relatedRefs(checklist, 'checklist_items').map((itemRef) => {
+              const item = byRef.get(`${itemRef.type}:${itemRef.id}`);
+              return {
+                id: itemRef.id,
+                text: plainText(item?.attributes.text),
+                checked: item?.attributes.checked ?? null
+              };
+            })
+          };
+        })
       }))
     });
   }
