@@ -13,25 +13,8 @@
 // Controller sources to consult when a payload is rejected:
 //   scinote-web/app/controllers/api/v1/*.rb
 
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from './config.js';
-
-export interface Credential {
-  apiKey?: string;
-  jwt?: string;
-}
-
-// Over HTTP the caller supplies its own SciNote credential, so the server holds
-// no ambient authority of its own; stdio falls back to the .env credential.
-const credentials = new AsyncLocalStorage<Credential>();
-
-export function withCredential<T>(credential: Credential, run: () => Promise<T>): Promise<T> {
-  return credentials.run(credential, run);
-}
-
-function currentCredential(): Credential {
-  return credentials.getStore() ?? { apiKey: config.apiKey, jwt: config.jwt };
-}
+import { currentCredential, requireExperiment, requireTeam } from './session.js';
 
 export interface JsonApiResource {
   id: string;
@@ -130,11 +113,24 @@ export function plainText(value: unknown): string {
     .trim();
 }
 
-const scope = () =>
-  `/api/v1/teams/${config.teamId}/projects/${config.projectId}/experiments/${config.experimentId}`;
+const scope = () => {
+  const { teamId, projectId, experimentId } = requireExperiment();
+  return `/api/v1/teams/${teamId}/projects/${projectId}/experiments/${experimentId}`;
+};
 
 export const scinote = {
   status: () => request<{ message: string; versions: unknown[] }>('GET', '/api/status'),
+
+  // --- Scope discovery ---
+
+  listTeams: () => listAll('/api/v1/teams'),
+
+  listProjects: (teamId: string) => listAll(`/api/v1/teams/${teamId}/projects`),
+
+  listExperiments: (teamId: string, projectId: string) =>
+    listAll(`/api/v1/teams/${teamId}/projects/${projectId}/experiments`),
+
+  listInventories: () => listAll(`/api/v1/teams/${requireTeam()}/inventories`),
 
   listTasks: () => listAll(`${scope()}/tasks`),
 
@@ -190,10 +186,10 @@ export const scinote = {
     }),
 
   listInventoryItems: (inventoryId: string) =>
-    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/items?include=inventory_cells`),
+    listAll(`/api/v1/teams/${requireTeam()}/inventories/${inventoryId}/items?include=inventory_cells`),
 
   listInventoryColumns: (inventoryId: string) =>
-    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns`),
+    listAll(`/api/v1/teams/${requireTeam()}/inventories/${inventoryId}/columns`),
 
   // --- Milestone 4 (see app/controllers/api/v1/results_controller.rb) ---
 
@@ -213,21 +209,25 @@ function escapeHtml(value: string): string {
 }
 
 // Stock cells reference their unit by id, so resolve the inventory's unit list once.
+// Keyed by team too, since the same inventory is only reachable through the team
+// that owns it.
 const unitCache = new Map<string, Promise<Map<string, string>>>();
 
 export function stockUnitNames(inventoryId: string): Promise<Map<string, string>> {
-  let cached = unitCache.get(inventoryId);
+  const teamId = requireTeam();
+  const cacheKey = `${teamId}:${inventoryId}`;
+  let cached = unitCache.get(cacheKey);
   if (!cached) {
     cached = (async () => {
       const columns = await scinote.listInventoryColumns(inventoryId);
       const stockColumn = columns.data.find((c) => c.attributes.data_type === 'stock');
       if (!stockColumn) return new Map<string, string>();
       const units = await listAll(
-        `/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns/${stockColumn.id}/stock_unit_items`
+        `/api/v1/teams/${teamId}/inventories/${inventoryId}/columns/${stockColumn.id}/stock_unit_items`
       );
       return new Map(units.data.map((u) => [u.id, String(u.attributes.data)]));
     })();
-    unitCache.set(inventoryId, cached);
+    unitCache.set(cacheKey, cached);
   }
   return cached;
 }

@@ -11,7 +11,7 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { config } from './config.js';
 import { createServer } from './server.js';
-import { withCredential, type Credential } from './scinote.js';
+import { withCredential, type Credential } from './session.js';
 
 const MAX_BODY_BYTES = 1_000_000;
 

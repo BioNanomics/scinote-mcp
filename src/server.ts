@@ -1,9 +1,10 @@
 // SciNote MCP tool definitions.
 //
 // Tools (see README.md for the milestone history):
-//   scinote_status, list_tasks, get_task_steps
+//   scinote_status, set_scope, list_teams, list_projects, list_experiments
+//   list_tasks, get_task_steps
 //   tick_checklist_item, complete_step
-//   list_task_items, assign_item, consume_stock
+//   list_task_items, assign_item, consume_stock, list_inventories
 //   find_inventory_item, add_result_note
 //
 // Every write goes through the SciNote REST API with the tech's own credential
@@ -22,6 +23,7 @@ import {
   SciNoteError,
   type JsonApiResource
 } from './scinote.js';
+import { getScope, saveScope, ScopeError, type Scope } from './session.js';
 
 const text = (value: unknown) => ({
   content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
@@ -33,6 +35,7 @@ async function friendly(run: () => Promise<string>) {
   try {
     return text(await run());
   } catch (error) {
+    if (error instanceof ScopeError) return { ...text(error.message), isError: true };
     if (!(error instanceof SciNoteError)) throw error;
     const advice =
       error.status === 403 ? "You don't have permission to do that in SciNote."
@@ -96,68 +99,204 @@ function normalize(value: string): string[] {
     .map((token) => NUMBER_WORDS[token] ?? token);
 }
 
+// Every token has to hit, shortest name wins — so "aliquot 2" doesn't match
+// "Aliquot 20" ahead of the exact one.
+function search(resources: JsonApiResource[], query: string): JsonApiResource[] {
+  const tokens = normalize(query);
+  if (tokens.length === 0) return [];
+  return resources
+    .map((resource) => {
+      const name = normalize(String(resource.attributes.name));
+      const squashed = name.join('');
+      const hits = tokens.filter((t) => name.some((n) => n.startsWith(t)) || squashed.includes(t)).length;
+      return { resource, hits, length: squashed.length };
+    })
+    .filter((m) => m.hits === tokens.length)
+    .sort((a, b) => a.length - b.length)
+    .map((m) => m.resource);
+}
+
+// Voice input never carries ids, so scope can be set by name; an exact id still
+// wins in case someone reads one off the screen.
+function resolve(resources: JsonApiResource[], query: string, label: string): JsonApiResource {
+  const byId = resources.find((r) => r.id === query.trim());
+  if (byId) return byId;
+
+  const matches = search(resources, query);
+  if (matches.length === 0) {
+    const available = resources.map((r) => `${r.id}: ${r.attributes.name}`).join('\n');
+    throw new ScopeError(`No ${label} matches "${query}". Available:\n${available}`);
+  }
+  return matches[0];
+}
+
+function listing(resources: JsonApiResource[], empty: string): string {
+  if (resources.length === 0) return empty;
+  return resources.map((r) => `${r.id}: ${r.attributes.name}`).join('\n');
+}
+
+// Reports the scope by name, since ids mean nothing spoken aloud.
+async function describeScope(scope: Scope): Promise<string> {
+  if (!scope.teamId) return 'No team selected yet.';
+
+  const nameOf = (resources: JsonApiResource[], id: string) =>
+    String(resources.find((r) => r.id === id)?.attributes.name ?? `#${id}`);
+
+  const teams = await scinote.listTeams();
+  const parts = [`team ${nameOf(teams.data, scope.teamId)}`];
+
+  if (scope.projectId) {
+    const projects = await scinote.listProjects(scope.teamId);
+    parts.push(`project ${nameOf(projects.data, scope.projectId)}`);
+
+    if (scope.experimentId) {
+      const experiments = await scinote.listExperiments(scope.teamId, scope.projectId);
+      parts.push(`experiment ${nameOf(experiments.data, scope.experimentId)}`);
+    }
+  }
+  return parts.join(' / ');
+}
+
 // A server instance binds to exactly one transport, so HTTP sessions each get
 // their own via this factory.
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
 
   // -------------------------------------------------------------------------
+  // Scope — which team / project / experiment the tech is working in
+  // -------------------------------------------------------------------------
+
+  server.tool(
+    'scinote_status',
+    'Check SciNote availability and report which team, project and experiment are currently selected. Call this first if you are unsure what the tech is working on.',
+    {},
+    async () =>
+      friendly(async () => {
+        const status = await scinote.status();
+        const scope = getScope();
+        const where = await describeScope(scope);
+        const hint = scope.experimentId
+          ? 'Use list_tasks to see the runs in it.'
+          : 'Call list_teams / list_projects / list_experiments, then set_scope.';
+        return `SciNote is up (${status.message}).\nWorking in: ${where}\n${hint}`;
+      })
+  );
+
+  server.tool('list_teams', 'List the SciNote teams this user belongs to', {}, async () =>
+    friendly(async () => listing((await scinote.listTeams()).data, 'This user is in no teams.'))
+  );
+
+  server.tool(
+    'list_projects',
+    'List projects in the selected team (set_scope a team first)',
+    {},
+    async () =>
+      friendly(async () => {
+        const { teamId } = getScope();
+        if (!teamId) throw new ScopeError('No team selected. Call list_teams, then set_scope.');
+        return listing((await scinote.listProjects(teamId)).data, 'This team has no projects.');
+      })
+  );
+
+  server.tool(
+    'list_experiments',
+    'List experiments in the selected project (set_scope a project first)',
+    {},
+    async () =>
+      friendly(async () => {
+        const { teamId, projectId } = getScope();
+        if (!teamId || !projectId) throw new ScopeError('No project selected. Call list_projects, then set_scope.');
+        return listing((await scinote.listExperiments(teamId, projectId)).data, 'This project has no experiments.');
+      })
+  );
+
+  server.tool(
+    'set_scope',
+    'Choose the team, project and experiment to work in, by name or id (e.g. "GingiGuard"). Sticks for the rest of the session. Selecting a team clears the project below it, and a project clears the experiment.',
+    {
+      team: z.string().optional().describe('Team name or id'),
+      project: z.string().optional().describe('Project name or id, within the selected team'),
+      experiment: z.string().optional().describe('Experiment name or id, within the selected project')
+    },
+    async ({ team, project, experiment }) =>
+      friendly(async () => {
+        if (!team && !project && !experiment) {
+          throw new ScopeError('Say which team, project or experiment to work in.');
+        }
+        let next: Scope = getScope();
+
+        if (team) {
+          next = { teamId: resolve((await scinote.listTeams()).data, team, 'team').id };
+        }
+        if (project) {
+          if (!next.teamId) throw new ScopeError('Pick a team before a project.');
+          const projects = await scinote.listProjects(next.teamId);
+          next = { teamId: next.teamId, projectId: resolve(projects.data, project, 'project').id };
+        }
+        if (experiment) {
+          if (!next.teamId || !next.projectId) throw new ScopeError('Pick a team and project before an experiment.');
+          const experiments = await scinote.listExperiments(next.teamId, next.projectId);
+          next = { ...next, experimentId: resolve(experiments.data, experiment, 'experiment').id };
+        }
+
+        return `Working in: ${await describeScope(saveScope(next))}`;
+      })
+  );
+
+  // -------------------------------------------------------------------------
   // Milestone 1 — read-only
   // -------------------------------------------------------------------------
 
-  server.tool('scinote_status', 'Check SciNote API availability and supported versions', {}, async () => {
-    return text(await scinote.status());
-  });
-
   server.tool(
     'list_tasks',
-    'List tasks (runs) in the configured experiment, with archived state',
+    'List tasks (runs) in the selected experiment, with archived state',
     {},
-    async () => {
-      const tasks = await scinote.listTasks();
-      return text(
-        tasks.data.map((t) => ({ id: t.id, name: t.attributes.name, state: t.attributes.state }))
-      );
-    }
+    async () =>
+      friendly(async () => {
+        const tasks = await scinote.listTasks();
+        if (tasks.data.length === 0) return 'This experiment has no tasks.';
+        return tasks.data.map((t) => `${t.id}: ${t.attributes.name} (${t.attributes.state})`).join('\n');
+      })
   );
 
   server.tool(
     'get_task_steps',
     'Get protocol steps for a task, including checklists and per-item checked state. Use this to find checklist item ids before ticking.',
     { taskId: z.string().describe('Task id from list_tasks') },
-    async ({ taskId }) => {
-      const protocols = await scinote.listProtocols(taskId);
-      if (protocols.data.length === 0) return text('Task has no protocol');
-      const protocolId = protocols.data[0].id;
-      const steps = await scinote.listSteps(taskId, protocolId);
-      const byRef = indexIncluded(steps.included);
+    async ({ taskId }) =>
+      friendly(async () => {
+        const protocols = await scinote.listProtocols(taskId);
+        if (protocols.data.length === 0) return 'Task has no protocol';
+        const protocolId = protocols.data[0].id;
+        const steps = await scinote.listSteps(taskId, protocolId);
+        const byRef = indexIncluded(steps.included);
 
-      return text({
-        protocolId,
-        steps: steps.data.map((s) => ({
-          id: s.id,
-          name: plainText(s.attributes.name),
-          position: s.attributes.position,
-          completed: s.attributes.completed,
-          checklists: relatedRefs(s, 'checklists').map((ref) => {
-            const checklist = byRef.get(`${ref.type}:${ref.id}`);
-            if (!checklist) return { id: ref.id, name: null, items: [] };
-            return {
-              id: checklist.id,
-              name: plainText(checklist.attributes.name),
-              items: relatedRefs(checklist, 'checklist_items').map((itemRef) => {
-                const item = byRef.get(`${itemRef.type}:${itemRef.id}`);
-                return {
-                  id: itemRef.id,
-                  text: plainText(item?.attributes.text),
-                  checked: item?.attributes.checked ?? null
-                };
-              })
-            };
-          })
-        }))
-      });
-    }
+        return JSON.stringify({
+          protocolId,
+          steps: steps.data.map((s) => ({
+            id: s.id,
+            name: plainText(s.attributes.name),
+            position: s.attributes.position,
+            completed: s.attributes.completed,
+            checklists: relatedRefs(s, 'checklists').map((ref) => {
+              const checklist = byRef.get(`${ref.type}:${ref.id}`);
+              if (!checklist) return { id: ref.id, name: null, items: [] };
+              return {
+                id: checklist.id,
+                name: plainText(checklist.attributes.name),
+                items: relatedRefs(checklist, 'checklist_items').map((itemRef) => {
+                  const item = byRef.get(`${itemRef.type}:${itemRef.id}`);
+                  return {
+                    id: itemRef.id,
+                    text: plainText(item?.attributes.text),
+                    checked: item?.attributes.checked ?? null
+                  };
+                })
+              };
+            })
+          }))
+        }, null, 2);
+      })
   );
 
   // -------------------------------------------------------------------------
@@ -264,36 +403,29 @@ export function createServer(): McpServer {
   // -------------------------------------------------------------------------
 
   server.tool(
+    'list_inventories',
+    'List inventories in the selected team, e.g. "GingiGuard Assay Reagents"',
+    {},
+    async () => friendly(async () => listing((await scinote.listInventories()).data, 'This team has no inventories.'))
+  );
+
+  server.tool(
     'find_inventory_item',
     'Find inventory items by name (e.g. "A1 aliquot two") and report stock levels. Returns the row ids that assign_item and consume_stock need.',
     {
-      inventoryId: z.string().describe('Inventory id, e.g. "2" for GingiGuard Assay Reagents'),
+      inventoryId: z.string().describe('Inventory id, from list_inventories'),
       query: z.string().describe('Spoken or typed name fragment')
     },
     async ({ inventoryId, query }) =>
       friendly(async () => {
-        const tokens = normalize(query);
-        if (tokens.length === 0) return 'Nothing to search for.';
-
         const items = await scinote.listInventoryItems(inventoryId);
         const byRef = indexIncluded(items.included);
-        const matches = items.data
-          .map((item) => {
-            const name = normalize(String(item.attributes.name));
-            const squashed = name.join('');
-            const hits = tokens.filter(
-              (t) => name.some((n) => n.startsWith(t)) || squashed.includes(t)
-            ).length;
-            return { item, hits, length: squashed.length };
-          })
-          .filter((m) => m.hits === tokens.length)
-          .sort((a, b) => a.length - b.length)
-          .slice(0, 10);
+        const matches = search(items.data, query).slice(0, 10);
 
         if (matches.length === 0) return `No inventory item matches "${query}".`;
 
         const lines = await Promise.all(
-          matches.map(async (m) => `${m.item.id}: ${await describeItem(m.item, byRef, inventoryId)}`)
+          matches.map(async (item) => `${item.id}: ${await describeItem(item, byRef, inventoryId)}`)
         );
         return lines.join('\n');
       })

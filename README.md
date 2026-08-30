@@ -46,13 +46,36 @@ bundle exec rails runner "puts User.find_by(email: 'admin@scinote.net').regenera
 
 ### Trying it out
 
-`npm run smoke` drives the server the same way an MCP client does:
+`npm run smoke` drives the server the same way an MCP client does. Several
+tool/args pairs run against one server process, which is how you set the
+working scope before a scoped call:
 
 ```bash
 npm run smoke                                        # list registered tools
-npm run smoke -- list_tasks
-npm run smoke -- get_task_steps '{"taskId":"970"}'
+npm run smoke -- scinote_status list_teams
+npm run smoke -- set_scope '{"team":"Dalaly","project":"Polymicrobial","experiment":"GingiGuard Assay"}' list_tasks
+npm run smoke -- set_scope '{...}' get_task_steps '{"taskId":"970"}'
 ```
+
+### Picking what to work on
+
+There's no team/project/experiment in `.env`. The tech chooses at runtime —
+"work on the GingiGuard assay" — and `set_scope` resolves the name and
+remembers it, so nothing downstream has to say ids out loud.
+
+That selection is keyed by the caller's credential rather than a connection,
+because HTTP requests are stateless here: each one builds a fresh server. Two
+techs on different runs therefore keep separate scopes, and a request that
+needs a scope it doesn't have answers with the tools to call instead of a 404.
+
+```
+scinote_status                       what's selected right now
+list_teams / list_projects / list_experiments / list_inventories
+set_scope { team?, project?, experiment? }   by name or id
+```
+
+The ids are nested, so choosing a team clears the project under it and
+choosing a project clears the experiment.
 
 Sanity check your credentials:
 
@@ -200,8 +223,7 @@ Not in this repo. Stand up a small chat backend that:
 
 ### Later / hardening
 
-- Task-scoped sessions ("I'm working Arm A1 Run 2" pins taskId so the tech never says ids)
-- Idempotency: repeating "consume 20 mL" must not double-log — read `stock_consumption` first and set, don't add
+- Task-scoped sessions ("I'm working Arm A1 Run 2" pins taskId so the tech never says ids)- Idempotency: repeating "consume 20 mL" must not double-log — read `stock_consumption` first and set, don't add
 - Rate limiting, retries with backoff, structured logging
 
 ## Testing tips
