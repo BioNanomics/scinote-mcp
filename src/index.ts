@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // SciNote MCP server — exposes bench workflows as MCP tools over stdio.
 //
-// Milestone map (see README.md):
-//   M1  scinote_status, list_tasks, get_task_steps          [implemented]
-//   M2  tick_checklist_item, complete_step                  [stubbed — your turn]
-//   M3  list_task_items, assign_item, consume_stock         [stubbed]
-//   M4  find_inventory_item, add_result_note                [stubbed]
+// Tools (see README.md for the milestone history):
+//   scinote_status, list_tasks, get_task_steps
+//   tick_checklist_item, complete_step
+//   list_task_items, assign_item, consume_stock
+//   find_inventory_item, add_result_note
+//
+// Every write goes through the SciNote REST API with the tech's own credential
+// so the audit trail, stock ledger, and permission checks stay intact.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -27,10 +30,6 @@ const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
 const text = (value: unknown) => ({
   content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
 });
-
-function notImplemented(milestone: string): never {
-  throw new Error(`Not implemented yet — this is your ${milestone} task. See README.md.`);
-}
 
 // Turns API failures into something a tech can act on rather than a stack trace.
 // Ids go stale whenever a protocol is re-loaded, which is the common case here.
@@ -170,9 +169,15 @@ server.tool(
 // ---------------------------------------------------------------------------
 
 // Renders "A1 - Aliquot 1 — 30 mL left (20 mL used on this task)" for a tech.
-async function describeItem(item: JsonApiResource, byRef: Map<string, JsonApiResource>) {
+// The inventory relationship is only serialized on task-scoped endpoints, so
+// callers that already know the inventory pass it in for the unit lookup.
+async function describeItem(
+  item: JsonApiResource,
+  byRef: Map<string, JsonApiResource>,
+  fallbackInventoryId?: string
+) {
   const stock = stockOf(item, byRef);
-  const inventoryId = inventoryIdOf(item);
+  const inventoryId = inventoryIdOf(item) ?? fallbackInventoryId;
   const unit = stock && inventoryId ? (await stockUnitNames(inventoryId)).get(stock.unitId) ?? '' : '';
   const used = item.attributes.stock_consumption;
 
@@ -238,18 +243,74 @@ server.tool(
 // Milestone 4 — search + results
 // ---------------------------------------------------------------------------
 
+// Speech-to-text spells numbers out and drops punctuation, so "a1 aliquot two"
+// has to reach the row named "A1 - Aliquot 2".
+const NUMBER_WORDS: Record<string, string> = {
+  zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9', ten: '10',
+  eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15',
+  sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19', twenty: '20'
+};
+
+function normalize(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map((token) => NUMBER_WORDS[token] ?? token);
+}
+
 server.tool(
   'find_inventory_item',
-  'Find inventory items by name fragment (e.g. "A1 aliquot") and report stock levels',
-  { inventoryId: z.string(), query: z.string() },
-  async () => notImplemented('Milestone 4')
+  'Find inventory items by name (e.g. "A1 aliquot two") and report stock levels. Returns the row ids that assign_item and consume_stock need.',
+  {
+    inventoryId: z.string().describe('Inventory id, e.g. "2" for GingiGuard Assay Reagents'),
+    query: z.string().describe('Spoken or typed name fragment')
+  },
+  async ({ inventoryId, query }) =>
+    friendly(async () => {
+      const tokens = normalize(query);
+      if (tokens.length === 0) return 'Nothing to search for.';
+
+      const items = await scinote.listInventoryItems(inventoryId);
+      const byRef = indexIncluded(items.included);
+      const matches = items.data
+        .map((item) => {
+          const name = normalize(String(item.attributes.name));
+          const squashed = name.join('');
+          const hits = tokens.filter(
+            (t) => name.some((n) => n.startsWith(t)) || squashed.includes(t)
+          ).length;
+          return { item, hits, length: squashed.length };
+        })
+        .filter((m) => m.hits === tokens.length)
+        .sort((a, b) => a.length - b.length)
+        .slice(0, 10);
+
+      if (matches.length === 0) return `No inventory item matches "${query}".`;
+
+      const lines = await Promise.all(
+        matches.map(async (m) => `${m.item.id}: ${await describeItem(m.item, byRef, inventoryId)}`)
+      );
+      return lines.join('\n');
+    })
 );
 
 server.tool(
   'add_result_note',
-  'Add a text result to a task (e.g. Z-stack folder path, deviations)',
-  { taskId: z.string(), name: z.string(), body: z.string() },
-  async () => notImplemented('Milestone 4')
+  'Add a text result to a task (e.g. Z-stack folder path, observations, deviations)',
+  {
+    taskId: z.string(),
+    name: z.string().describe('Short title, e.g. "Z-stack location" or "Deviation"'),
+    body: z.string().describe('The note itself, as dictated')
+  },
+  async ({ taskId, name, body }) =>
+    friendly(async () => {
+      const result = await scinote.createTextResult(taskId, name, body);
+      return `Saved result "${result.data.attributes.name}" on the task.`;
+    })
 );
 
 // ---------------------------------------------------------------------------

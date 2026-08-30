@@ -170,8 +170,24 @@ export const scinote = {
     listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/items?include=inventory_cells`),
 
   listInventoryColumns: (inventoryId: string) =>
-    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns`)
+    listAll(`/api/v1/teams/${config.teamId}/inventories/${inventoryId}/columns`),
+
+  // --- Milestone 4 (see app/controllers/api/v1/results_controller.rb) ---
+
+  // Result text is sideposted as an `included` result_texts resource.
+  createTextResult: (taskId: string, name: string, body: string) =>
+    request<Single>('POST', `${scope()}/tasks/${taskId}/results`, {
+      data: { type: 'results', attributes: { name } },
+      included: [{ type: 'result_texts', attributes: { text: `<p>${escapeHtml(body)}</p>` } }]
+    })
 };
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 // Stock cells reference their unit by id, so resolve the inventory's unit list once.
 const unitCache = new Map<string, Promise<Map<string, string>>>();

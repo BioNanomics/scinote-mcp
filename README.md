@@ -73,7 +73,9 @@ The API speaks [JSON:API](https://jsonapi.org): collections are `{ data: [{ id, 
 
 ## Milestones
 
-Work them in order; each is demoable on its own. `src/index.ts` has the tool stubs marked per milestone — replace the `notImplemented(...)` bodies.
+M0–M4 are done — all ten tools are implemented and verified against the dev
+instance. M5 is the remaining work. The notes below record what each milestone
+required and how it was accepted.
 
 ### M0 — Environment (half a day) — **done**
 
@@ -112,10 +114,10 @@ Work them in order; each is demoable on its own. `src/index.ts` has the tool stu
 
 **Accept:** full P3.1 flow via Inspector — assign "A1 - Aliquot 2", consume 20 mL, item shows 30 mL in SciNote with a ledger entry.
 
-### M4 — Search + results (1–2 days)
+### M4 — Search + results (1–2 days) — **done**
 
-- [ ] `find_inventory_item`: fuzzy name match over inventory items ("a1 aliquot 2" → row id), report stock. Voice input will be sloppy — normalize case/whitespace, tolerate "aliquot two"
-- [ ] `add_result_note`: create a text result on the task (results controller, v1; v2 has richer result elements if needed)
+- [x] `find_inventory_item`: name match over inventory items ("a1 aliquot two" → row 63), reports stock. Voice input is sloppy, so the query and the item name are both normalized (lowercased, punctuation dropped, number words mapped to digits) before matching
+- [x] `add_result_note`: create a text result on the task (results controller, v1; v2 has richer result elements if needed)
 
 **Accept:** "find A1 aliquot 2" round-trips to the right row id; a result note appears on the task.
 
