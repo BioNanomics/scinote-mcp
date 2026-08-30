@@ -12,6 +12,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { SERVER_INSTRUCTIONS, BENCH_RUN } from './instructions.js';
 import {
   scinote,
   indexIncluded,
@@ -160,7 +161,21 @@ async function describeScope(scope: Scope): Promise<string> {
 // A server instance binds to exactly one transport, so HTTP sessions each get
 // their own via this factory.
 export function createServer(): McpServer {
-  const server = new McpServer({ name: 'scinote-mcp', version: '0.1.0' });
+  const server = new McpServer(
+    { name: 'scinote-mcp', version: '0.1.0' },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
+
+  // Clients surface this by name (a slash command in most), so a tech can start
+  // a run without anyone having configured a prompt on their machine.
+  server.registerPrompt(
+    'bench_run',
+    {
+      title: 'Run a protocol at the bench',
+      description: 'Hands-free loop: read the next step, wait for confirmation, log completion and deviations'
+    },
+    () => ({ messages: [{ role: 'user', content: { type: 'text', text: BENCH_RUN } }] })
+  );
 
   // -------------------------------------------------------------------------
   // Scope — which team / project / experiment the tech is working in

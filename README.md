@@ -153,6 +153,32 @@ curl -s -X POST https://scinote-mcp.os.mieweb.org/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
+#### Instructions travel with the server
+
+A bench tech shouldn't have to paste a prompt to get a usable assistant, and a
+prompt pasted per client drifts out of step with the tools. So the guidance
+lives in `src/instructions.ts` and ships over the wire in two forms:
+
+| | Where it goes | Use it for |
+|---|---|---|
+| `SERVER_INSTRUCTIONS` | `instructions` in the initialize result; clients paste it into the system prompt | Always-on facts about this server — the scope model, the `ITEMS:` convention, never invent a result |
+| `BENCH_RUN` | the `bench_run` MCP prompt (`prompts/list`) | The hands-free loop, invoked by name when a run starts |
+
+The split is deliberate. Instructions are unconditional, so they stay short and
+factual. The read-one-step-and-wait loop is a workflow choice that shouldn't be
+forced on someone using these tools for something else, so it's a prompt the
+tech opts into.
+
+```bash
+curl -s -X POST https://scinote-mcp.os.mieweb.org/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H "Authorization: Bearer $SCINOTE_API_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"prompts/list"}'
+```
+
+Client support for `instructions` varies, so anything the run genuinely depends
+on belongs in a tool description too — those are always read.
+
 #### Logs
 
 One line per request on stdout — status, which kind of credential arrived
@@ -234,7 +260,7 @@ Not in this repo. Stand up a small chat backend that:
 - [ ] Mounts `HeyOzwell/HandsFreeChat` from [@mieweb/ui](https://ui.mieweb.org/?path=/docs/product-feature-modules-ai-hey-ozwell-hands-free-chat--docs) (start with `reviewBeforeSend: true`, `transcription: "browser"`)
 - [ ] Connects an LLM to this MCP server (any MCP-capable client/orchestrator)
 - [x] Carries the logged-in tech's SciNote credential per session — the HTTP transport reads it from `Authorization: Bearer` / `X-SciNote-Api-Key` on every request, so the client just has to forward it (see "The HTTP endpoint carries no ambient authority")
-- [ ] System prompt: confirm before any `consume_stock` or `complete_step`; always answer with the checkpoint name, not ids
+- [x] System prompt — the server ships its own, so no client has to be configured with one (see "Instructions travel with the server")
 
 **Accept:** on a tablet, say "hey ozwell — disk stained and rinsed, done" and watch the step complete in SciNote.
 
