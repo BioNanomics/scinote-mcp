@@ -103,10 +103,14 @@ the internet full write access to the ELN. So every HTTP request must present
 its own SciNote credential:
 
 ```
-X-SciNote-Api-Key: <the tech's own key>
+Authorization: Bearer <the tech's own API key, or a JWT>
    or
-Authorization: Bearer <JWT>
+X-SciNote-Api-Key: <the tech's own key>
 ```
+
+A bearer token shaped like a JWT (`header.payload.signature`) is forwarded as
+one; anything else is forwarded as an API key. SciNote's JWT decoder crashes on
+non-JWT input, so the shape has to decide before the token leaves here.
 
 Requests without one get a 401. The credential travels to `src/scinote.ts` via
 an `AsyncLocalStorage` context, never a module global, so requests can't leak
@@ -145,7 +149,7 @@ curl -s https://scinote-mcp.os.mieweb.org/healthz
 curl -s -X POST https://scinote-mcp.os.mieweb.org/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -H "X-SciNote-Api-Key: $SCINOTE_API_KEY" \
+  -H "Authorization: Bearer $SCINOTE_API_KEY" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
@@ -155,12 +159,12 @@ One line per request on stdout — status, which kind of credential arrived
 (never its value), and the tool that was called:
 
 ```
-2026-08-30T04:11:39.641Z POST /mcp 401 auth=bearer
-2026-08-30T04:11:39.829Z POST /mcp 200 auth=api-key tools/call list_teams
+2026-08-30T04:21:58.163Z POST /mcp 200 auth=bearer tools/call list_teams
+2026-08-30T04:21:58.197Z POST /mcp 401 auth=none
 ```
 
-`auth=bearer` on a 401 means the client sent a token of its own rather than a
-SciNote credential.
+`auth=none` on a 401 means no credential header arrived at all — check that the
+client is actually sending the one you configured.
 
 ### Useful references
 
@@ -229,7 +233,7 @@ Not in this repo. Stand up a small chat backend that:
 
 - [ ] Mounts `HeyOzwell/HandsFreeChat` from [@mieweb/ui](https://ui.mieweb.org/?path=/docs/product-feature-modules-ai-hey-ozwell-hands-free-chat--docs) (start with `reviewBeforeSend: true`, `transcription: "browser"`)
 - [ ] Connects an LLM to this MCP server (any MCP-capable client/orchestrator)
-- [x] Carries the logged-in tech's SciNote credential per session — the HTTP transport reads it from `X-SciNote-Api-Key` / `Authorization: Bearer` on every request, so the client just has to forward it (see "The HTTP endpoint carries no ambient authority")
+- [x] Carries the logged-in tech's SciNote credential per session — the HTTP transport reads it from `Authorization: Bearer` / `X-SciNote-Api-Key` on every request, so the client just has to forward it (see "The HTTP endpoint carries no ambient authority")
 - [ ] System prompt: confirm before any `consume_stock` or `complete_step`; always answer with the checkpoint name, not ids
 
 **Accept:** on a tablet, say "hey ozwell — disk stained and rinsed, done" and watch the step complete in SciNote.
