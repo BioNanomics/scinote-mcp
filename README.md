@@ -181,8 +181,18 @@ on belongs in a tool description too — those are always read.
 
 #### Logs
 
-One line per request on stdout — status, which kind of credential arrived
-(never its value), and the tool that was called:
+The dev deployment runs as a systemd **user** unit,
+`~/.config/systemd/user/scinote-mcp.service`, alongside `scinote-web` and
+`scinote-worker`. It restarts on failure and comes back after a reboot
+(`loginctl enable-linger` is already on for this user).
+
+```bash
+systemctl --user restart scinote-mcp     # after a code change; tsx doesn't reload
+journalctl --user -u scinote-mcp -f
+```
+
+One line per request — status, which kind of credential arrived (never its
+value), and the tool that was called:
 
 ```
 2026-08-30T04:21:58.163Z POST /mcp 200 auth=bearer tools/call list_teams
